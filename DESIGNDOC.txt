@@ -1,0 +1,467 @@
+            +--------------------+
+            |        EE 415      |
+            | PROJECT 1: THREADS |
+            |   DESIGN DOCUMENT  |
+            +--------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Bryan Nathanael Wijaya <bryannwijaya@kaist.ac.kr>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+Reference on how to use the list lib, especially related to how to write 
+the list_less_func() for list_insert_ordered(): https://jeason.gitbooks.
+io/pintos-reference-guide-sysu/content/list.html 
+
+Page faults: https://stackoverflow.com/questions/5684365/
+what-causes-page-faults 
+
+Fixed-point arithmetics: https://en.wikipedia.org/wiki/Fixed-point_
+arithmetic#:~:text=In%20computing%2C%20fixed%2Dpoint%20refers,1%2F
+100%20of%20dollar).
+
+Bitwise operations in C from 2020 Spring EE209A Programming Structure 
+for EE Lecture Notes.
+
+                 ALARM CLOCK
+                 ===========
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed 'struct' or
+>> 'struct' member, global or static variable, 'typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+[In threads/thread.c]
+static struct list sleep_list;
+This static list variable is added to accommodate the blocked threads 
+(i.e., sleeping by timer_sleep()) for the non-busy waiting design.
+
+[In threads/thread.h]
+struct thread
+{
+    ...
+    int64_t wakeup_tick;
+	...
+}
+This additional struct member is to accommodate the tick at which the 
+sleeping (blocked) thread should be waken up by timer_interrupt().
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+timer_sleep() calculates the time that has been elapsed since OS booted, 
+makes sure interrupts are on, calculates the tick when the calling 
+thread should be waken up later, and calls thread_sleep(). 
+thread_sleep() checks if the thread is not idle_thread. If so, it 
+inserts it to the sleep_list in the order of increasing wakeup_tick 
+(using thread_compare()) and calls thread_block() to set the thread 
+status to THREAD_BLOCKED and call schedule().
+timer_interrupt(), aside from checking the amount of CPU used by the 
+current process, additionally calls thread_wakeup() which checks the 
+wakeup_tick-ordered sleep_list whether there is any sleeping thread that 
+needs to be waken up. When such thread(s) exists, it moves the thread to 
+ready_list and set the status to THREAD_READY using thread_unblock().
+As can be seen in thread_block() and thread_unblock(), interrupts are 
+disabled while modifying the lists and re-enabled when the modification 
+is done.
+ 
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+The sleep_list is designed to be ordered based on the threads’ 
+wakeup_tick. Hence, everytime the timer interrupt handler iterates the 
+loop, we can simply stop the iteration at any point (using break) once 
+the thread’s wakeup_tick value is larger than the current tick since OS 
+is booted, which saves time. More time could have been saved if global 
+tick variable was used to track the minimum wakeup_tick value of the 
+threads in sleep_list so the timer interrupt handler does not have to 
+call thread_wakeup() everytime, but I could not achieve it.
+
+---- SYNCHRONIZATION ----
+
+>> A4: How are race conditions avoided when multiple threads call
+>> timer_sleep() simultaneously?
+Based on the design diagram, only running threads can call timer_sleep() 
+and from the handout it is stated that only 1 thread can run at a time. 
+Hence, such a race condition should have already been avoided and thus 
+is not handled/implemented in this design.
+
+>> A5: How are race conditions avoided when a timer interrupt occurs
+>> during a call to timer_sleep()?
+The interrupts are turned off when we are modifying the thread list, 
+such can be seen in thread_sleep() which is called by timer_sleep(), to 
+prevent synchronization errors and unwanted interruptions shall race 
+conditions may occur during the call. Of course, they are restored to 
+their original values when the modifications are done.
+
+---- RATIONALE ----
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+I chose this design because after trying various possible designs, this 
+implementation allows the completion of the task with minimum code, no 
+error, and reasonable time. Actually, with other designs that I tried, I 
+often got unexpected interrupts (0x0e, #PF exception). Also, I felt that 
+arranging sleeping threads in order inside the list would allow more 
+efficient and significantly faster iteration of the sleep_list in each 
+time interrupt handler, which happens often, compared to unordered list. 
+Additionally using the global tick variable as suggested by the project 
+PPT would have enhanced the speed even further, but I kept getting error 
+when applying it so I decided to not use the global variable in the 
+meantime. 
+
+             PRIORITY SCHEDULING
+             ===================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed 'struct' or
+>> 'struct' member, global or static variable, 'typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+[In threads/thread.h]
+struct thread
+{
+    ...
+    struct lock *wait_on_lock;
+    struct list donations;
+    struct list_elem d_elem;
+    int initial_priority;
+    ...
+}
+These attributes are added to struct thread as the data structure for 
+accommodating priority donation. Their specific purposes are commented.
+
+>> B2: Explain the data structure used to track priority donation.
+>> Use ASCII art to diagram a nested donation.  (Alternately, submit a
+>> .png file.)
+
+The figure below shows the tracking of nested priority donation.
+Here, lock->holder points to the thread that holds it, while 
+thread->wait_on_lock points to the lock that it is waiting for.
+In this manner, they are all connected. Hence, by the 
+priority_donation () defined in threads/synch.c, the priority of
+the bottom thread (i.e., THREAD 3, waiting for LOCK B) can be 
+donated to the middle thread (i.e., THREAD 2 holding LOCK B and
+waiting for LOCK A) and the top thread (i.e., THREAD 1, holding 
+LOCK A) in the figure.
+Note that during priority donation, the value of "priority" 
+changes but "initial_priority" is not altered since it is used
+for the restoration of "priority" later.
+
++------------------+
+|     THREAD 1  <--+----------+
++------------------+          |
+|       ....       |          |         +--------------+
+|     priority     |          |         |    LOCK A <--+------+
+|       ....       |          |         +--------------+      |
+|   wait_on_lock   |          +---------+--- holder    |      |
+|    donations     |                    |  semaphore   |      |
+|      d_elem      |                    +--------------+      |
+| initial_priority |                                          |
+|       ....       |     +------------------------------------+
++------------------+     |
+ holder2 (END HERE)      |
+                         |
++------------------+     |
+|     THREAD 2  <--+-----+----+
++------------------+     |    |
+|       ....       |     |    |         +--------------+
+|     priority     |     |    |         |    LOCK B <--+------+
+|       ....       |     |    |         +--------------+      |
+|   wait_on_lock --+-----+    +---------+--- holder    |      |
+|    donations     |                    |  semaphore   |      |
+|      d_elem      |                    +--------------+      |
+| initial_priority |                                          |
+|       ....       |                                          |
++------------------+                                          |
+ holder1 -> current2                                          |
+                                                              |
++------------------+                                          |
+|     THREAD 3     |                                          |
++------------------+                                          |
+|       ....       |                                          |
+|     priority     |                                          |
+|       ....       |                                          |
+|   wait_on_lock --+------------------------------------------+
+|    donations     |
+|      d_elem      |
+| initial_priority |
+|       ....       |
++------------------+ 
+current1 (START HERE)
+
+
+---- ALGORITHMS ----
+
+>> B3: How do you ensure that the highest priority thread waiting for
+>> a lock, semaphore, or condition variable wakes up first?
+
+This was done by inserting threads to the waiters list in the order 
+of decreasing priority and the list is always resorted when there 
+is any priority changes so that the semaphore always points to the 
+thread with the highest priority.
+Lock is governed by semaphore, so it did not require further
+modifications.
+For the condition variable, the same approach was taken for its 
+waiters list, but due to the different structure of condition variable, 
+this was achieved by implementing different set of functions from 
+semaphore.
+
+>> B4: Describe the sequence of events when a call to lock_acquire()
+>> causes a priority donation.  How is nested donation handled?
+
+When lock_acquire (LOCK) is called, the following event occurs.
+    1. Assert that LOCK exists, interrupt context assert, and 
+       assert that the current thread is not the holder of LOCK.
+    2. Checks if any thread is holding LOCK.
+    3. If that is the case, the wait_on_lock of the current thread
+       points to the lock address, the d_elem of current thread is
+       inserted to the lock holder's donations list in the order of
+       decreasing priority, then priority donation happens.
+    4. Priority donation happens by calling priority_donation () 
+       which supports nested donation as explained in B2. That is, 
+       with an infinite loop, the priority of the current thread is 
+       donated to the holder of LOCK. If the holder of LOCK is 
+       waiting for another lock, the donation continues to that 
+       other lock holder and the process continues indefinitely 
+       until we reach to the n-th holder that does not wait for
+       any lock. Note that if the LOCK holder is not waiting for
+       another lock, the donation stops there.
+       Note that, although an infinite loop is used, there is an
+       if-break statement inside it that breaks the loop once the 
+       i-th lock holder is not waiting for another lock. 
+       At this point, we exit the loop and the nested donation
+       is terminated.
+    5. Wait for lock->semaphore's value to become positive and then 
+       atomically decrements it. In other words, it requests the 
+       semaphore and decreases its value by 1 when acquired.
+    6. Current thread finally holds the lock. In other words, the 
+       lock->holder now points to the current thread.
+
+Nested donation handling is explained in step 4.
+
+>> B5: Describe the sequence of events when lock_release() is called
+>> on a lock that a higher-priority thread is waiting for.
+
+When lock_release (LOCK) is called on a lock that a higher-priority
+thread is waiting for, the following events occur.
+    1. Assert that LOCK exists and that LOCK is held by the current
+       thread.
+    2. Call set_priorities_right () to do the following.
+        a. Remove all donations list elements that were waiting for
+           the LOCK which is going to be released.
+        b. Reset its priority because when a higher-priority thread
+           is waiting for LOCK, priority donation has occurred to it. 
+           First, it changes its priority to initial_priority which
+           is not altered during priority donations.
+           Second, check if there is any left dangling d_elem to its 
+           donations list that wait for the other lock(s) that the current
+           thread holds (!LOCK). In that case, set the priority value of 
+           the current_thread to the maximum between initial_priority
+           and the highest priority among the threads attached to the
+           donations list.
+    3. Release LOCK by setting the lock->holder to NULL.
+    4. Increase lock->semaphore's value and wake up one thread of those
+       waiting for lock->semaphore if any. In other words, release this
+       semaphore.
+
+---- SYNCHRONIZATION ----
+
+>> B6: Describe a potential race in thread_set_priority() and explain
+>> how your implementation avoids it.  Can you use a lock to avoid
+>> this race?
+
+I am not sure about this, and I think I did not really consider this 
+condition in my thread_set_priority () implementation. 
+However, lock might be used to avoid this race since lock is more 
+"exclusive" in a manner that it has to be passed over from one thread 
+to another and that "only the one with the key can enter the door".
+
+---- RATIONALE ----
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+Honestly, I am still quite new to all this and I simply tried to follow
+all the PPT guidelines and arrived to this design after hours and
+hours of debugging. Now, to think about it, this design is beautiful
+since the modifications and additional functions made for the semaphore
+and condition variables are somewhat analogous to each other, making
+it so much easier to understand than simply hard coding them, for 
+instance, by making changes to the lock in order to track the priority
+donations. Additionally, simply sorting all the lists in the decreasing
+order of priorities is a really nice approach since it significantly
+reduces the time needed to scan the whole lists in case if they are
+not sorted.
+
+              ADVANCED SCHEDULER
+              ==================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed 'struct' or
+>> 'struct' member, global or static variable, 'typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+[In threads/fixed_point.h]
+typedef int fp_t;
+This is to differentiate the 17.14 fixed-point value from an actual
+integer value.
+
+[In threads/fixed_point.c]
+#define F (1<<14)
+F is used as a conversion factor between int type and float-point 
+17.14 type for calculations involving float.
+
+[In threads/thread.h]
+#define INITIAL_NICE 0
+#define INITIAL_RECENT_CPU 0
+#define INITIAL_LOAD_AVERAGE 0
+These newly defined constants are the initial values of nice and 
+recent_cpu upon thread initialization and initial load_average value 
+upon the start of thread system.
+
+[In threads/thread.h]
+struct thread
+{
+    ...
+    int nice;
+    fp_t recent_cpu;
+    ...
+}
+These two are the elements of thread in advanced scheduling to determine
+its priority automatically. 
+
+[In threads/thread.c]
+fp_t load_average;
+This global variable is the load average for the OS in advanced 
+scheduling, which is changed over time.
+
+---- ALGORITHMS ----
+
+>> C2: Suppose threads A, B, and C have nice values 0, 1, and 2.  Each
+>> has a recent_cpu value of 0.  Fill in the table below showing the
+>> scheduling decision and the priority and recent_cpu values for each
+>> thread after each given number of timer ticks:
+
+timer  recent_cpu    priority   thread
+ticks   A   B   C   A   B   C   to run
+-----  --  --  --  --  --  --   ------
+ 0     00  00  00  63  61  59     A
+ 4     04  00  00  62  61  59     A
+ 8     08  00  00  61  61  59     B
+12     08  04  00  61  60  59     A
+16     12  04  00  60  60  59     B
+20     12  08  00  60  59  59     A
+24     16  08  00  59  59  59     C
+28     16  08  04  59  59  58     B
+32     16  12  04  59  58  58     A
+36     20  12  04  58  58  58     C
+
+Here, I assummed that the 36 ticks occur within 1 second so the
+recent_cpu is not recalculated yet.
+
+>> C3: Did any ambiguities in the scheduler specification make values
+>> in the table uncertain?  If so, what rule did you use to resolve
+>> them?  Does this match the behavior of your scheduler?
+
+Yes, ambiguities do occur when the threads have the same priority values.
+I implemented the round-robin algorithm to solve this ambiguity, so it
+will choose the thread that have used the cpu the least (i.e., smallest
+recent_cpu) shall the highest priority is a tie. 
+However, I may have not impement this in my code...
+
+>> C4: How is the way you divided the cost of scheduling between code
+>> inside and outside interrupt context likely to affect performance?
+
+I tried to minimize the time it takes for timer_interrupt () to finish
+its job each time. This was implemented by strict nested if statements 
+in which the interrupt will strictly increase the recent cpu of running 
+thread every tick, recalculate the priority every four ticks, and 
+recalculate the load average and recent cpu every second.
+
+---- RATIONALE ----
+
+>> C5: Briefly critique your design, pointing out advantages and
+>> disadvantages in your design choices.  If you were to have extra
+>> time to work on this part of the project, how might you choose to
+>> refine or improve your design?
+
+I thought my design in this part was good enough. However, it seems to 
+fail since I kept getting unexpected interrupts despite my 
+sophisticated interrupt handling :( NEED HEEEEELPPPPPPPP
+I cannot find where the error is from, I suck at using gdb :(
+
+>> C6: The assignment explains arithmetic for fixed-point math in
+>> detail, but it leaves it open to you to implement it.  Why did you
+>> decide to implement it the way you did?  If you created an
+>> abstraction layer for fixed-point math, that is, an abstract data
+>> type and/or a set of functions or macros to manipulate fixed-point
+>> numbers, why did you do so?  If not, why not?
+
+The arithmetic for fixed-point math was given in the PPT and the 
+functions that I defined to achieve them basically copies that one.
+I did define a macro F (1<<14) because we are converting 17.14 format 
+and this can be done, for instance, for "1" by doing bit shift 
+14 digits to the left. Hence, with this, F can be utilized as an easy
+conversion factor. I learned about this from the lecture note of EE209A
+and could not think of any other way.
+
+I also implemented a separate data type for the fixed-point type (fp_t) 
+so that it can be distinguished from the actual integer values.
+With this, it would be easier to detect errors in my functions while 
+compiling and so on due to data type difference!
+
+Finally, I prepared a separate set of C source file and a header file
+for the fixed-point arithmetic to improve modularization as it helps
+to read the code better.
+
+               SURVEY QUESTIONS
+               ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+TOOOOOOO HARD. I spent most of my weeks just for debugging this and
+yet I barely finished. I think I spent some 40 hours or so :(
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+It does help me understand the structure of PintOS and how OS work 
+in general, though. Very helpful.
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+TAs were very helpful during the lab sessions and very kind.
+But I do appreciate if you can give more hints next time :D
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+Thanks for your kind assistance, always.
+
+>> Any other comments?
+
+Please give me many partial points :"((((
